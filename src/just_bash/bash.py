@@ -27,8 +27,10 @@ from typing import Optional
 import nest_asyncio  # type: ignore[import-untyped]
 
 from .commands import create_command_registry
+from .commands.registry import create_network_lazy_commands
 from .fs import InMemoryFs
 from .interpreter import ExitError, Interpreter, InterpreterState, ShellOptions, VariableStore
+from .network import make_default_fetch
 from .parser import parse, unescape_html_entities
 from .parser.parser import ParseException
 from .types import (
@@ -37,6 +39,7 @@ from .types import (
     ExecutionLimits,
     IFileSystem,
     NetworkConfig,
+    SecureFetch,
 )
 
 
@@ -56,6 +59,7 @@ class Bash:
         env: Optional[dict[str, str]] = None,
         limits: Optional[ExecutionLimits] = None,
         network: Optional[NetworkConfig] = None,
+        fetch: Optional[SecureFetch] = None,
         commands: Optional[dict[str, Command]] = None,
         errexit: bool = False,
         pipefail: bool = False,
@@ -71,6 +75,7 @@ class Bash:
             env: Additional environment variables.
             limits: Execution limits for security.
             network: Network configuration (for curl command).
+            fetch: Custom secure fetch function (for curl command).
             commands: Custom command registry. If not provided, uses built-in commands.
             errexit: Enable errexit (set -e) mode.
             pipefail: Enable pipefail mode.
@@ -88,11 +93,18 @@ class Bash:
         # Set up limits
         self._limits = limits or ExecutionLimits()
 
-        # Set up commands
-        self._commands = commands or create_command_registry()
-
         # Set up network config
         self._network = network
+        self._fetch = fetch or (make_default_fetch(network) if network is not None else None)
+
+        # Set up commands
+        if commands is None:
+            self._commands = create_command_registry(include_network=self._fetch is not None)
+        else:
+            self._commands = dict(commands)
+            if self._fetch is not None and "curl" not in self._commands:
+                for cmd in create_network_lazy_commands():
+                    self._commands[cmd.name] = cmd
 
         # Set up HTML unescaping
         self._unescape_html = unescape_html
@@ -135,6 +147,7 @@ class Bash:
             commands=self._commands,
             limits=self._limits,
             state=self._initial_state,
+            fetch=self._fetch,
         )
 
     @property
@@ -244,6 +257,7 @@ class Bash:
             fs=self._fs,
             commands=self._commands,
             limits=self._limits,
+            fetch=self._fetch,
             state=InterpreterState(
                 env=self._initial_state.env.copy() if isinstance(self._initial_state.env, VariableStore) else VariableStore(self._initial_state.env),
                 cwd=self._initial_state.cwd,

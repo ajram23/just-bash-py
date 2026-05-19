@@ -38,14 +38,34 @@ class ExecutionLimits:
 
 
 @dataclass
+class RequestTransform:
+    """Headers to inject at the network boundary for an allowed URL."""
+
+    headers: dict[str, str]
+
+
+@dataclass
+class AllowedUrl:
+    """Allowed URL prefix with optional request transforms."""
+
+    url: str
+    transform: list[RequestTransform] = field(default_factory=list)
+
+
+@dataclass
 class NetworkConfig:
     """Network access configuration."""
 
-    allowed_url_prefixes: list[str] = field(default_factory=list)
-    allowed_methods: list[str] = field(default_factory=lambda: ["GET", "POST", "PUT", "DELETE"])
-    max_redirects: int = 10
+    allowed_url_prefixes: list[str | AllowedUrl] = field(default_factory=list)
+    allowed_methods: list[str] = field(default_factory=lambda: ["GET", "HEAD"])
+    max_redirects: int = 20
     timeout_ms: int = 30_000
+    max_response_size: int = 10_485_760
+    deny_private_ranges: bool = False
     dangerously_allow_full_internet_access: bool = False
+
+
+SecureFetch = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 class IFileSystem(Protocol):

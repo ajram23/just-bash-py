@@ -13,6 +13,7 @@ Example usage:
 
 from .bash import Bash
 from .types import (
+    AllowedUrl,
     ExecResult,
     BashExecResult,
     ExecutionLimits,
@@ -23,6 +24,8 @@ from .types import (
     Command,
     OK,
     FAIL,
+    RequestTransform,
+    SecureFetch,
 )
 from .fs import InMemoryFs
 from .parser import Parser, parse, ParseException
@@ -37,6 +40,9 @@ __all__ = [
     "BashExecResult",
     "ExecutionLimits",
     "NetworkConfig",
+    "AllowedUrl",
+    "RequestTransform",
+    "SecureFetch",
     "IFileSystem",
     "FsStat",
     "CommandContext",
