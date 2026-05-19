@@ -271,6 +271,27 @@ bash = Bash(unescape_html=False)
 - **Filesystem isolation** - Virtual filesystem keeps host system safe
 - **SQLite sandboxed** - Only in-memory databases allowed
 
+### Network Access
+
+Network access is disabled by default. Configure it explicitly to enable `curl`:
+
+```python
+from just_bash import Bash, NetworkConfig
+
+bash = Bash(
+    network=NetworkConfig(
+        allowed_url_prefixes=["https://api.example.com/v1/"],
+        allowed_methods=["GET", "HEAD"],
+    )
+)
+
+result = await bash.exec("curl -s https://api.example.com/v1/status")
+```
+
+`curl` is registered only when `network` or a custom `fetch` function is provided.
+The default fetch implementation enforces URL prefixes, HTTP methods, redirects,
+timeouts, response-size limits, and optional private-range blocking.
+
 ## Supported Features
 
 ### Shell Syntax

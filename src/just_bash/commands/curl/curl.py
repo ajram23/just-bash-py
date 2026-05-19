@@ -129,6 +129,13 @@ def format_headers(headers: dict[str, str]) -> str:
     return "\r\n".join(f"{name}: {value}" for name, value in headers.items())
 
 
+def body_to_stdout(body: str | bytes) -> str:
+    """Convert response bytes to stdout's string representation."""
+    if isinstance(body, bytes):
+        return body.decode("latin-1")
+    return body
+
+
 def extract_filename(url: str) -> str:
     """Extract filename from URL for -O option."""
     try:
@@ -776,7 +783,7 @@ class CurlCommand:
 
         # Add body (unless head-only mode)
         if not options.head_only:
-            output += body
+            output += body_to_stdout(body)
         elif options.include_headers or options.verbose:
             # For HEAD, we already showed headers
             pass

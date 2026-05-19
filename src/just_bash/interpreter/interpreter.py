@@ -30,7 +30,7 @@ from ..ast.types import (
     ConditionalCommandNode,
     ArithmeticCommandNode,
 )
-from ..types import Command, ExecResult, ExecutionLimits, IFileSystem
+from ..types import Command, ExecResult, ExecutionLimits, IFileSystem, SecureFetch
 from .errors import (
     BadSubstitutionError,
     BreakError,
@@ -129,6 +129,7 @@ class Interpreter:
         commands: dict[str, Command],
         limits: ExecutionLimits,
         state: Optional[InterpreterState] = None,
+        fetch: Optional[SecureFetch] = None,
     ):
         """Initialize the interpreter.
 
@@ -137,10 +138,12 @@ class Interpreter:
             commands: Command registry
             limits: Execution limits
             state: Optional initial state (creates default if not provided)
+            fetch: Optional secure fetch function for network-enabled commands
         """
         self._fs = fs
         self._commands = commands
         self._limits = limits
+        self._fetch = fetch
         self._state = state or InterpreterState(
             env=VariableStore({
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -216,6 +219,7 @@ class Interpreter:
                 commands=self._commands,
                 limits=self._limits,
                 state=new_state,
+                fetch=self._fetch,
             )
             try:
                 return await sub_interpreter.execute_script(ast)
@@ -570,6 +574,7 @@ class Interpreter:
             commands=self._commands,
             limits=self._limits,
             state=new_state,
+            fetch=self._fetch,
         )
 
         # Execute statements in subshell
@@ -1158,6 +1163,7 @@ class Interpreter:
                         script, opts.get("env"), opts["cwd"]
                     ),
                     get_registered_commands=lambda: list(self._commands.keys()),
+                    fetch=self._fetch,
                     fd_contents=fd_contents,
                 )
                 result = await cmd.execute(args, ctx)
