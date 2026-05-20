@@ -4,6 +4,7 @@ import pytest
 from aiohttp import web
 
 from just_bash import AllowedUrl, Bash, NetworkConfig, RequestTransform
+from just_bash.network import _is_private_hostname, _matches_allow_entry, _read_limited_body
 
 
 async def make_server(routes):
@@ -17,6 +18,84 @@ async def make_server(routes):
     assert site._server is not None
     port = site._server.sockets[0].getsockname()[1]
     return runner, f"http://127.0.0.1:{port}"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "https://api.example.com/v1?token=secret",
+        "https://api.example.com/v1#section",
+        "ftp://api.example.com/v1",
+        "https:///v1",
+        "/v1",
+        "https://api.example.com/v1%2fadmin",
+        {"not_url": "https://api.example.com"},
+    ],
+)
+def test_invalid_allow_list_entries_fail_fast(entry):
+    with pytest.raises(ValueError, match="Invalid network allow-list"):
+        Bash(network=NetworkConfig(allowed_url_prefixes=[entry]))
+
+
+def test_allow_list_matching_normalizes_origins_and_preserves_path_boundaries():
+    assert _matches_allow_entry("https://example.com:443/v1/users", "https://EXAMPLE.com/v1")
+    assert _matches_allow_entry("http://example.com:80/v1/users", "http://example.com/v1")
+    assert _matches_allow_entry("https://example.com:8443/v1/users", "https://example.com:8443/v1")
+    assert not _matches_allow_entry("https://example.com:8443/v1/users", "https://example.com/v1")
+    assert not _matches_allow_entry("https://example.com/v10", "https://example.com/v1")
+    assert not _matches_allow_entry("https://example.com/v1-admin", "https://example.com/v1")
+
+
+@pytest.mark.parametrize(
+    "hostname",
+    [
+        "100.64.0.1",
+        "2130706433",
+        "0x7f.0.0.1",
+        "::1",
+        "::ffff:127.0.0.1",
+    ],
+)
+def test_private_range_detection_matches_upstream_cases(hostname):
+    assert _is_private_hostname(hostname)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://100.64.0.1/",
+        "http://2130706433/",
+        "http://0x7f.0.0.1/",
+        "http://[::1]/",
+        "http://[::ffff:127.0.0.1]/",
+    ],
+)
+async def test_private_ranges_blocked_even_with_full_access(url):
+    bash = Bash(
+        network=NetworkConfig(
+            dangerously_allow_full_internet_access=True,
+            deny_private_ranges=True,
+        )
+    )
+
+    result = await bash.exec(f"curl -sS {url}")
+
+    assert result.exit_code == 7
+    assert "private/loopback" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_malformed_content_length_falls_back_to_streamed_size_check():
+    class FakeContent:
+        async def iter_chunked(self, _size):
+            yield b"ok"
+
+    class FakeResponse:
+        headers = {"content-length": "nope"}
+        content = FakeContent()
+
+    assert await _read_limited_body(FakeResponse(), 3) == b"ok"
 
 
 @pytest.mark.asyncio
