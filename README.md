@@ -96,6 +96,7 @@ bash = Bash(
     env={...},             # Environment variables
     cwd="/home/user",      # Working directory
     network=NetworkConfig(...),  # Network configuration (for curl)
+    fetch=custom_fetch,    # Custom async fetch function (for curl)
     unescape_html=True,    # Auto-fix HTML entities in LLM output (default: True)
 )
 ```
@@ -271,6 +272,92 @@ bash = Bash(unescape_html=False)
 - **Filesystem isolation** - Virtual filesystem keeps host system safe
 - **SQLite sandboxed** - Only in-memory databases allowed
 
+### Network Access
+
+Network access is disabled by default. Configure it explicitly to enable `curl`:
+
+```python
+from just_bash import Bash, NetworkConfig
+
+bash = Bash(
+    network=NetworkConfig(
+        allowed_url_prefixes=["https://api.example.com/v1/"],
+    )
+)
+
+result = await bash.exec("curl -s https://api.example.com/v1/status")
+```
+
+`curl` is registered only when `network` or a custom `fetch` function is provided.
+Without network configuration, `curl` returns "command not found".
+
+Allow additional HTTP methods when needed:
+
+```python
+bash = Bash(
+    network=NetworkConfig(
+        allowed_url_prefixes=["https://api.example.com/"],
+        allowed_methods=["GET", "HEAD", "POST"],
+    )
+)
+```
+
+Inject trusted headers at the network boundary so secrets never enter the sandbox:
+
+```python
+from just_bash import AllowedUrl, Bash, NetworkConfig, RequestTransform
+
+bash = Bash(
+    network=NetworkConfig(
+        allowed_url_prefixes=[
+            AllowedUrl(
+                url="https://api.example.com/",
+                transform=[
+                    RequestTransform(headers={"Authorization": "Bearer secret"})
+                ],
+            )
+        ],
+    )
+)
+```
+
+Allow all URLs and methods only when the caller already trusts the sandboxed command:
+
+```python
+bash = Bash(
+    network=NetworkConfig(dangerously_allow_full_internet_access=True)
+)
+```
+
+Pass `fetch=custom_fetch` to provide your own async `fetch(url, options)`
+implementation. The default fetch implementation uses `aiohttp` and enforces URL
+prefixes, HTTP methods, redirects, timeouts, response-size limits, and optional
+private-range blocking.
+
+#### Allow-List Security
+
+The allow-list enforces:
+
+- **Origin matching** - URLs must match the exact scheme, host, and port
+- **Path prefix** - Only paths starting with the configured prefix are allowed
+- **HTTP method restrictions** - Only GET and HEAD are allowed by default
+- **Redirect protection** - Redirect targets are checked before following them
+- **Header transforms** - Boundary-injected headers override sandbox-supplied headers with the same name
+
+#### Using curl
+
+```bash
+# Fetch and process data
+curl -s https://api.example.com/data | grep pattern
+
+# Download into the virtual filesystem
+curl -fsSL -o response.json https://api.example.com/data
+
+# POST JSON data
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"key":"value"}' https://api.example.com/endpoint
+```
+
 ## Supported Features
 
 ### Shell Syntax
@@ -395,7 +482,7 @@ bash      sh
 
 ## Test Results
 
-Test suite history per commit (spec_tests excluded). Each `█` ≈ 57 tests.
+Test suite history per commit (spec_tests excluded). Each `█` ≈ 58 tests.
 
 ```
 Commit   Date         Passed  Failed  Skipped  Graph
@@ -410,6 +497,8 @@ a7e64a4  2026-02-11     2825       0        2  ███████████
 e736ca4  2026-02-17     2831       0        2  ███████████████████████████████████████████████████░
 4dddca8  2026-02-18     2849       0        2  █████████████████████████████████████████████████░
 7c83ff3  2026-02-18     2870       0        3  █████████████████████████████████████████████████░
+bbb2f27  2026-05-19     2884       0        3  █████████████████████████████████████████████████░
+ad7fcdb  2026-05-19     2903       0        3  █████████████████████████████████████████████████░
 ```
 
 `█` passed · `▒` failed · `░` skipped
