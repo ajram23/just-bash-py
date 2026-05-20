@@ -6,11 +6,17 @@ import asyncio
 import ipaddress
 import socket
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import SplitResult, urljoin, urlsplit
 
 import aiohttp
 
 from ..types import AllowedUrl, NetworkConfig, RequestTransform
+
+_ALLOWED_SCHEMES = {"http", "https"}
+_BODY_CHUNK_SIZE = 64 * 1024
+_INVALID_ALLOW_LIST_ENTRY = (
+    'Invalid allow-list entry: must be a string URL or an object with a "url" string property'
+)
 
 
 class NetworkAccessDeniedError(Exception):
@@ -58,10 +64,44 @@ def _entry_url(entry: str | AllowedUrl | dict[str, Any]) -> str:
     return entry.url
 
 
+def _default_port(scheme: str) -> int | None:
+    if scheme == "http":
+        return 80
+    if scheme == "https":
+        return 443
+    return None
+
+
+def _parse_http_url(url: str) -> SplitResult | None:
+    try:
+        parsed = urlsplit(url)
+        # Accessing .port validates malformed ports.
+        _ = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in _ALLOWED_SCHEMES or not parsed.hostname:
+        return None
+    return parsed
+
+
+def _normalized_origin(parsed: SplitResult) -> tuple[str, str, int]:
+    scheme = parsed.scheme.lower()
+    port = parsed.port or _default_port(scheme)
+    if port is None:
+        # _parse_http_url guarantees this is unreachable for callers.
+        raise ValueError(f"unsupported URL scheme: {parsed.scheme}")
+    return scheme, (parsed.hostname or "").lower(), port
+
+
+def _has_ambiguous_path_separators(path: str) -> bool:
+    normalized = path.lower()
+    return "\\" in path or "%2f" in normalized or "%5c" in normalized
+
+
 def _path_matches(path: str, prefix: str) -> bool:
     if prefix in ("", "/"):
         return True
-    if "%2f" in path.lower() or "%5c" in path.lower() or "\\" in path:
+    if _has_ambiguous_path_separators(path):
         return False
     if prefix.endswith("/"):
         return path.startswith(prefix)
@@ -69,18 +109,144 @@ def _path_matches(path: str, prefix: str) -> bool:
 
 
 def _matches_allow_entry(url: str, allowed_entry: str) -> bool:
-    parsed_url = urlparse(url)
-    parsed_allowed = urlparse(allowed_entry)
-    if not parsed_url.scheme or not parsed_url.netloc:
+    parsed_url = _parse_http_url(url)
+    parsed_allowed = _parse_http_url(allowed_entry)
+    if parsed_url is None or parsed_allowed is None:
         return False
-    if not parsed_allowed.scheme or not parsed_allowed.netloc:
-        return False
-
-    url_origin = f"{parsed_url.scheme}://{parsed_url.netloc}"
-    allowed_origin = f"{parsed_allowed.scheme}://{parsed_allowed.netloc}"
-    if url_origin != allowed_origin:
+    if _normalized_origin(parsed_url) != _normalized_origin(parsed_allowed):
         return False
     return _path_matches(parsed_url.path or "/", parsed_allowed.path or "/")
+
+
+def _validate_allow_list(entries: list[str | AllowedUrl]) -> list[str]:
+    errors: list[str] = []
+    for raw_entry in entries:
+        if isinstance(raw_entry, dict):
+            entry = raw_entry.get("url")
+        elif isinstance(raw_entry, str):
+            entry = raw_entry
+        elif isinstance(raw_entry, AllowedUrl):
+            entry = raw_entry.url
+        else:
+            errors.append(_INVALID_ALLOW_LIST_ENTRY)
+            continue
+
+        if not isinstance(entry, str):
+            errors.append(_INVALID_ALLOW_LIST_ENTRY)
+            continue
+
+        parsed = _parse_http_url(entry)
+        if parsed is None:
+            errors.append(
+                f'Invalid URL in allow-list: "{entry}" - '
+                "must be an http(s) URL with scheme and host"
+            )
+            continue
+
+        if parsed.query or parsed.fragment:
+            errors.append(
+                f'Query strings and fragments are ignored in allow-list entries: "{entry}"'
+            )
+            continue
+
+        path = parsed.path or "/"
+        if path not in ("", "/") and _has_ambiguous_path_separators(path):
+            errors.append(f'Allow-list entry contains ambiguous path separators: "{entry}"')
+    return errors
+
+
+def _parse_ipv4_component(part: str) -> int | None:
+    if not part:
+        return None
+    base = 10
+    digits = part
+    if digits.startswith(("0x", "0X")):
+        base = 16
+        digits = digits[2:]
+    elif len(digits) > 1 and digits.startswith("0"):
+        base = 8
+    try:
+        value = int(digits, base)
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def _parse_ipv4(host: str) -> ipaddress.IPv4Address | None:
+    parts = host.split(".")
+    if not parts or len(parts) > 4:
+        return None
+    nums = [_parse_ipv4_component(part) for part in parts]
+    if any(num is None for num in nums):
+        return None
+
+    values = [num for num in nums if num is not None]
+    if len(values) == 1:
+        number = values[0]
+        if number > 0xFFFFFFFF:
+            return None
+    elif len(values) == 2:
+        first, second = values
+        if first > 0xFF or second > 0xFFFFFF:
+            return None
+        number = (first << 24) | second
+    elif len(values) == 3:
+        first, second, third = values
+        if first > 0xFF or second > 0xFF or third > 0xFFFF:
+            return None
+        number = (first << 24) | (second << 16) | third
+    else:
+        first, second, third, fourth = values
+        if first > 0xFF or second > 0xFF or third > 0xFF or fourth > 0xFF:
+            return None
+        number = (first << 24) | (second << 16) | (third << 8) | fourth
+
+    try:
+        return ipaddress.IPv4Address(number)
+    except ipaddress.AddressValueError:
+        return None
+
+
+def _is_private_ipv4(ip: ipaddress.IPv4Address) -> bool:
+    ranges = (
+        ipaddress.IPv4Network("0.0.0.0/8"),
+        ipaddress.IPv4Network("10.0.0.0/8"),
+        ipaddress.IPv4Network("100.64.0.0/10"),
+        ipaddress.IPv4Network("127.0.0.0/8"),
+        ipaddress.IPv4Network("169.254.0.0/16"),
+        ipaddress.IPv4Network("172.16.0.0/12"),
+        ipaddress.IPv4Network("192.0.0.0/24"),
+        ipaddress.IPv4Network("192.0.2.0/24"),
+        ipaddress.IPv4Network("192.168.0.0/16"),
+        ipaddress.IPv4Network("198.18.0.0/15"),
+        ipaddress.IPv4Network("198.51.100.0/24"),
+        ipaddress.IPv4Network("203.0.113.0/24"),
+        ipaddress.IPv4Network("224.0.0.0/4"),
+        ipaddress.IPv4Network("240.0.0.0/4"),
+    )
+    return any(ip in network for network in ranges)
+
+
+def _is_private_ipv6(ip: ipaddress.IPv6Address) -> bool:
+    if ip.ipv4_mapped is not None:
+        return _is_private_ipv4(ip.ipv4_mapped)
+    ranges = (
+        ipaddress.IPv6Network("::/128"),
+        ipaddress.IPv6Network("::1/128"),
+        ipaddress.IPv6Network("fe80::/10"),
+        ipaddress.IPv6Network("fc00::/7"),
+        ipaddress.IPv6Network("2001:db8::/32"),
+        ipaddress.IPv6Network("64:ff9b::/96"),
+        ipaddress.IPv6Network("64:ff9b:1::/48"),
+    )
+    if any(ip in network for network in ranges):
+        return True
+    if ip in ipaddress.IPv6Network("2002::/16"):
+        embedded = int(ip) >> 80 & 0xFFFFFFFF
+        return _is_private_ipv4(ipaddress.IPv4Address(embedded))
+    return False
 
 
 def _is_private_hostname(hostname: str) -> bool:
@@ -89,11 +255,16 @@ def _is_private_hostname(hostname: str) -> bool:
         host = host[1:-1]
     if host == "localhost" or host.endswith(".localhost"):
         return True
+    parsed_ipv4 = _parse_ipv4(host)
+    if parsed_ipv4 is not None:
+        return _is_private_ipv4(parsed_ipv4)
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+    if isinstance(ip, ipaddress.IPv4Address):
+        return _is_private_ipv4(ip)
+    return _is_private_ipv6(ip)
 
 
 async def _resolve_host(hostname: str, port: int) -> list[dict[str, Any]]:
@@ -156,6 +327,11 @@ def make_default_fetch(config: NetworkConfig):
     """Create an aiohttp-backed secure fetch function for curl."""
 
     entries = config.allowed_url_prefixes
+    if not config.dangerously_allow_full_internet_access:
+        errors = _validate_allow_list(entries)
+        if errors:
+            raise ValueError("Invalid network allow-list:\n" + "\n".join(errors))
+
     allowed_methods = (
         ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
         if config.dangerously_allow_full_internet_access
@@ -163,8 +339,8 @@ def make_default_fetch(config: NetworkConfig):
     )
 
     async def check_allowed(url: str) -> list[dict[str, Any]] | None:
-        parsed = urlparse(url)
-        if not parsed.scheme or not parsed.netloc:
+        parsed = _parse_http_url(url)
+        if parsed is None:
             raise NetworkAccessDeniedError(url, "invalid URL")
 
         if not config.dangerously_allow_full_internet_access and not any(
@@ -179,7 +355,7 @@ def make_default_fetch(config: NetworkConfig):
         if _is_private_hostname(hostname):
             raise NetworkAccessDeniedError(url, "private/loopback IP address blocked")
 
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        port = parsed.port or _default_port(parsed.scheme.lower()) or 80
         records = await _resolve_host(hostname, port)
         for record in records:
             if _is_private_hostname(record["host"]):
@@ -214,23 +390,6 @@ def make_default_fetch(config: NetworkConfig):
                 merged.update(headers)
         return merged
 
-    async def read_limited_body(resp: aiohttp.ClientResponse) -> bytes:
-        max_size = config.max_response_size
-        chunks: list[bytes] = []
-        total = 0
-
-        if max_size > 0:
-            content_length = resp.headers.get("content-length")
-            if content_length and int(content_length) > max_size:
-                raise ResponseTooLargeError(max_size)
-
-        async for chunk in resp.content.iter_chunked(64 * 1024):
-            total += len(chunk)
-            if max_size > 0 and total > max_size:
-                raise ResponseTooLargeError(max_size)
-            chunks.append(chunk)
-        return b"".join(chunks)
-
     async def fetch(url: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
         options = options or {}
         method = (options.get("method") or "GET").upper()
@@ -253,7 +412,7 @@ def make_default_fetch(config: NetworkConfig):
             timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
             connector = (
                 aiohttp.TCPConnector(
-                    resolver=_PinnedResolver(urlparse(current_url).hostname or "", pinned_records)
+                    resolver=_PinnedResolver(urlsplit(current_url).hostname or "", pinned_records)
                 )
                 if pinned_records
                 else None
@@ -275,7 +434,9 @@ def make_default_fetch(config: NetworkConfig):
                         if resp.status in {301, 302, 303, 307, 308} and follow_redirects:
                             location = resp.headers.get("location")
                             if not location:
-                                response_body = await read_limited_body(resp)
+                                response_body = await _read_limited_body(
+                                    resp, config.max_response_size
+                                )
                                 return {
                                     "status": resp.status,
                                     "statusText": resp.reason or "",
@@ -298,7 +459,9 @@ def make_default_fetch(config: NetworkConfig):
                             current_url = redirect_url
                             continue
 
-                        response_body = await read_limited_body(resp)
+                        response_body = await _read_limited_body(
+                            resp, config.max_response_size
+                        )
                         return {
                             "status": resp.status,
                             "statusText": resp.reason or "",
@@ -311,3 +474,25 @@ def make_default_fetch(config: NetworkConfig):
                 raise TimeoutError("operation timeout") from exc
 
     return fetch
+
+
+async def _read_limited_body(resp: aiohttp.ClientResponse, max_size: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+
+    if max_size > 0:
+        content_length = resp.headers.get("content-length")
+        if content_length:
+            try:
+                size = int(content_length)
+            except ValueError:
+                size = None
+            if size is not None and size > max_size:
+                raise ResponseTooLargeError(max_size)
+
+    async for chunk in resp.content.iter_chunked(_BODY_CHUNK_SIZE):
+        total += len(chunk)
+        if max_size > 0 and total > max_size:
+            raise ResponseTooLargeError(max_size)
+        chunks.append(chunk)
+    return b"".join(chunks)
