@@ -430,6 +430,14 @@ def make_default_fetch(config: NetworkConfig):
                         data=body,
                         allow_redirects=False,
                         auto_decompress=False,
+                        # Don't let aiohttp auto-advertise `Accept-Encoding:
+                        # gzip, deflate`. The curl layer only opts into
+                        # compression under --compressed (and then decompresses
+                        # itself); with auto_decompress=False an auto-injected
+                        # header makes the server return raw gzip bytes that
+                        # plain `curl` never asked for and won't decode. Honor
+                        # only an Accept-Encoding the caller set explicitly.
+                        skip_auto_headers=["Accept-Encoding"],
                     ) as resp:
                         if resp.status in {301, 302, 303, 307, 308} and follow_redirects:
                             location = resp.headers.get("location")
