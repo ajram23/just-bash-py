@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 
 import pytest
 from aiohttp import web
@@ -368,3 +369,70 @@ async def test_curl_write_out_format_string():
 
     assert result.exit_code == 0
     assert result.stdout.endswith("text/plain; charset=utf-8|4")
+
+
+def _make_compressing_server_routes(payload, seen):
+    """A handler that gzips its response iff the client advertises gzip.
+
+    Mirrors real-world servers (e.g. whitehouse.gov) that compress only when
+    the request carries `Accept-Encoding: gzip`. `seen` captures the header the
+    server actually received so tests can assert what curl advertised.
+    """
+
+    async def handler(request):
+        accept_encoding = request.headers.get("Accept-Encoding", "")
+        seen["accept_encoding"] = accept_encoding
+        if "gzip" in accept_encoding:
+            return web.Response(
+                body=gzip.compress(payload.encode()),
+                headers={"Content-Encoding": "gzip"},
+                content_type="text/plain",
+            )
+        return web.Response(text=payload, content_type="text/plain")
+
+    return [("GET", "/page", handler)]
+
+
+@pytest.mark.asyncio
+async def test_plain_curl_does_not_advertise_compression():
+    """Plain `curl` must not request gzip and must return decoded text.
+
+    Regression: aiohttp auto-injects `Accept-Encoding: gzip, deflate` on every
+    request. Combined with `auto_decompress=False`, plain `curl` (no
+    --compressed) received raw gzip bytes the curl layer correctly refused to
+    decompress, surfacing as binary garbage. Real curl sends no Accept-Encoding
+    without --compressed, so the server returns identity and the body is clean.
+    """
+    payload = "hello-world-not-binary-garbage"
+    seen = {}
+    runner, base_url = await make_server(_make_compressing_server_routes(payload, seen))
+    try:
+        bash = Bash(network=NetworkConfig(allowed_url_prefixes=[base_url]))
+        result = await bash.exec(f"curl -s {base_url}/page")
+    finally:
+        await runner.cleanup()
+
+    assert result.exit_code == 0
+    # curl did not opt into compression, so the server saw no gzip request...
+    assert "gzip" not in seen["accept_encoding"]
+    # ...and the body is clean text, not raw gzip bytes.
+    assert result.stdout == payload
+
+
+@pytest.mark.asyncio
+async def test_compressed_flag_still_negotiates_and_decompresses():
+    """`curl --compressed` must advertise gzip and transparently decompress."""
+    payload = "hello-from-a-gzipped-response"
+    seen = {}
+    runner, base_url = await make_server(_make_compressing_server_routes(payload, seen))
+    try:
+        bash = Bash(network=NetworkConfig(allowed_url_prefixes=[base_url]))
+        result = await bash.exec(f"curl -s --compressed {base_url}/page")
+    finally:
+        await runner.cleanup()
+
+    assert result.exit_code == 0
+    # --compressed opted in, so the server compressed the response...
+    assert "gzip" in seen["accept_encoding"]
+    # ...and curl decompressed it back to clean text.
+    assert result.stdout == payload
