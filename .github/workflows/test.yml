@@ -28,4 +28,4 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest tests/test_commands/ -v --tb=short
+          pytest tests/test_commands/ tests/test_network.py -v --tb=short
