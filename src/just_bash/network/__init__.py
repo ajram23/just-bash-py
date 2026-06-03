@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import SplitResult, urljoin, urlsplit
 
@@ -118,7 +119,7 @@ def _matches_allow_entry(url: str, allowed_entry: str) -> bool:
     return _path_matches(parsed_url.path or "/", parsed_allowed.path or "/")
 
 
-def _validate_allow_list(entries: list[str | AllowedUrl]) -> list[str]:
+def _validate_allow_list(entries: list[str | AllowedUrl | dict[str, Any]]) -> list[str]:
     errors: list[str] = []
     for raw_entry in entries:
         if isinstance(raw_entry, dict):
@@ -209,41 +210,46 @@ def _parse_ipv4(host: str) -> ipaddress.IPv4Address | None:
         return None
 
 
+# Precomputed once at import — these are on the hot path for
+# deny_private_ranges=True (checked for the hostname and each resolved address).
+_PRIVATE_IPV4_NETWORKS = (
+    ipaddress.IPv4Network("0.0.0.0/8"),
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("100.64.0.0/10"),
+    ipaddress.IPv4Network("127.0.0.0/8"),
+    ipaddress.IPv4Network("169.254.0.0/16"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.0.0.0/24"),
+    ipaddress.IPv4Network("192.0.2.0/24"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+    ipaddress.IPv4Network("198.18.0.0/15"),
+    ipaddress.IPv4Network("198.51.100.0/24"),
+    ipaddress.IPv4Network("203.0.113.0/24"),
+    ipaddress.IPv4Network("224.0.0.0/4"),
+    ipaddress.IPv4Network("240.0.0.0/4"),
+)
+_PRIVATE_IPV6_NETWORKS = (
+    ipaddress.IPv6Network("::/128"),
+    ipaddress.IPv6Network("::1/128"),
+    ipaddress.IPv6Network("fe80::/10"),
+    ipaddress.IPv6Network("fc00::/7"),
+    ipaddress.IPv6Network("2001:db8::/32"),
+    ipaddress.IPv6Network("64:ff9b::/96"),
+    ipaddress.IPv6Network("64:ff9b:1::/48"),
+)
+_SIXTOFOUR_NETWORK = ipaddress.IPv6Network("2002::/16")
+
+
 def _is_private_ipv4(ip: ipaddress.IPv4Address) -> bool:
-    ranges = (
-        ipaddress.IPv4Network("0.0.0.0/8"),
-        ipaddress.IPv4Network("10.0.0.0/8"),
-        ipaddress.IPv4Network("100.64.0.0/10"),
-        ipaddress.IPv4Network("127.0.0.0/8"),
-        ipaddress.IPv4Network("169.254.0.0/16"),
-        ipaddress.IPv4Network("172.16.0.0/12"),
-        ipaddress.IPv4Network("192.0.0.0/24"),
-        ipaddress.IPv4Network("192.0.2.0/24"),
-        ipaddress.IPv4Network("192.168.0.0/16"),
-        ipaddress.IPv4Network("198.18.0.0/15"),
-        ipaddress.IPv4Network("198.51.100.0/24"),
-        ipaddress.IPv4Network("203.0.113.0/24"),
-        ipaddress.IPv4Network("224.0.0.0/4"),
-        ipaddress.IPv4Network("240.0.0.0/4"),
-    )
-    return any(ip in network for network in ranges)
+    return any(ip in network for network in _PRIVATE_IPV4_NETWORKS)
 
 
 def _is_private_ipv6(ip: ipaddress.IPv6Address) -> bool:
     if ip.ipv4_mapped is not None:
         return _is_private_ipv4(ip.ipv4_mapped)
-    ranges = (
-        ipaddress.IPv6Network("::/128"),
-        ipaddress.IPv6Network("::1/128"),
-        ipaddress.IPv6Network("fe80::/10"),
-        ipaddress.IPv6Network("fc00::/7"),
-        ipaddress.IPv6Network("2001:db8::/32"),
-        ipaddress.IPv6Network("64:ff9b::/96"),
-        ipaddress.IPv6Network("64:ff9b:1::/48"),
-    )
-    if any(ip in network for network in ranges):
+    if any(ip in network for network in _PRIVATE_IPV6_NETWORKS):
         return True
-    if ip in ipaddress.IPv6Network("2002::/16"):
+    if ip in _SIXTOFOUR_NETWORK:
         embedded = int(ip) >> 80 & 0xFFFFFFFF
         return _is_private_ipv4(ipaddress.IPv4Address(embedded))
     return False
@@ -376,7 +382,7 @@ def make_default_fetch(config: NetworkConfig):
             entry_url = _entry_url(entry)
             if isinstance(entry, str) or not _matches_allow_entry(url, entry_url):
                 continue
-            transforms: list[RequestTransform | dict[str, Any]]
+            transforms: Sequence[RequestTransform | dict[str, Any]]
             if isinstance(entry, dict):
                 transforms = entry.get("transform", [])
             else:
