@@ -56,7 +56,7 @@ class AllowedUrl:
 class NetworkConfig:
     """Network access configuration."""
 
-    allowed_url_prefixes: list[str | AllowedUrl] = field(default_factory=list)
+    allowed_url_prefixes: list[str | AllowedUrl | dict[str, Any]] = field(default_factory=list)
     allowed_methods: list[str] = field(default_factory=lambda: ["GET", "HEAD"])
     max_redirects: int = 20
     timeout_ms: int = 30_000
