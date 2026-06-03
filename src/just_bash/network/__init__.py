@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import SplitResult, urljoin, urlsplit
 
 import aiohttp
+from aiohttp.abc import AbstractResolver, ResolveResult
 
 from ..types import AllowedUrl, NetworkConfig, RequestTransform
 
@@ -273,13 +274,13 @@ def _is_private_hostname(hostname: str) -> bool:
     return _is_private_ipv6(ip)
 
 
-async def _resolve_host(hostname: str, port: int) -> list[dict[str, Any]]:
+async def _resolve_host(hostname: str, port: int) -> list[ResolveResult]:
     loop = asyncio.get_running_loop()
     infos = await loop.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
-    results: list[dict[str, Any]] = []
+    results: list[ResolveResult] = []
     seen: set[tuple[str, int]] = set()
     for family, _, proto, _, sockaddr in infos:
-        address = sockaddr[0]
+        address = str(sockaddr[0])
         key = (address, family)
         if key in seen:
             continue
@@ -297,8 +298,8 @@ async def _resolve_host(hostname: str, port: int) -> list[dict[str, Any]]:
     return results
 
 
-class _PinnedResolver(aiohttp.abc.AbstractResolver):
-    def __init__(self, hostname: str, records: list[dict[str, Any]]) -> None:
+class _PinnedResolver(AbstractResolver):
+    def __init__(self, hostname: str, records: list[ResolveResult]) -> None:
         self._hostname = hostname
         self._records = records
 
@@ -307,7 +308,7 @@ class _PinnedResolver(aiohttp.abc.AbstractResolver):
         host: str,
         port: int = 0,
         family: socket.AddressFamily = socket.AF_INET,
-    ) -> list[dict[str, Any]]:
+    ) -> list[ResolveResult]:
         if host == self._hostname:
             return [{**record, "port": port} for record in self._records]
         return await _resolve_host(host, port)
@@ -344,7 +345,7 @@ def make_default_fetch(config: NetworkConfig):
         else [method.upper() for method in config.allowed_methods]
     )
 
-    async def check_allowed(url: str) -> list[dict[str, Any]] | None:
+    async def check_allowed(url: str) -> list[ResolveResult] | None:
         parsed = _parse_http_url(url)
         if parsed is None:
             raise NetworkAccessDeniedError(url, "invalid URL")
