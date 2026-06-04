@@ -434,6 +434,11 @@ class MountableFs:
         fs, rel_path, _ = self._route_path(path)
         await fs.chmod(rel_path, mode)
 
+    async def utimes(self, path: str, atime: float, mtime: float) -> None:
+        """Set access and modification times for a file."""
+        fs, rel_path, _ = self._route_path(path)
+        await fs.utimes(rel_path, atime, mtime)
+
     async def symlink(self, target: str, link_path: str) -> None:
         """Create a symbolic link."""
         fs, rel_path, _ = self._route_path(link_path)

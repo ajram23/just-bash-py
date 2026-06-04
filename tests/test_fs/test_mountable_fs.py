@@ -535,3 +535,32 @@ class TestResolve:
 
         result = fs.resolve_path("/dir", "/other/file.txt")
         assert result == "/other/file.txt"
+
+
+class TestUtimes:
+    """Test utimes() delegation to mounted filesystems (issue #6)."""
+
+    @pytest.mark.asyncio
+    async def test_utimes_routes_to_mount(self):
+        """utimes() should delegate to the mounted filesystem."""
+        from just_bash.fs import MountableFs, MountableFsOptions, InMemoryFs
+
+        fs = MountableFs(MountableFsOptions())
+        child_fs = InMemoryFs(initial_files={"/file.txt": "content"})
+        fs.mount("/mnt", child_fs)
+
+        await fs.utimes("/mnt/file.txt", 1000000000.0, 1000000000.0)
+
+        stat = await fs.stat("/mnt/file.txt")
+        assert stat.mtime == 1000000000.0
+
+    @pytest.mark.asyncio
+    async def test_utimes_nonexistent_file(self):
+        """utimes() on a missing file should raise FileNotFoundError."""
+        from just_bash.fs import MountableFs, MountableFsOptions, InMemoryFs
+
+        fs = MountableFs(MountableFsOptions())
+        fs.mount("/mnt", InMemoryFs())
+
+        with pytest.raises(FileNotFoundError):
+            await fs.utimes("/mnt/nonexistent.txt", 1000000000.0, 1000000000.0)

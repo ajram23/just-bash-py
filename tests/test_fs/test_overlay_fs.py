@@ -571,3 +571,52 @@ class TestPathHandling:
 
             content = await fs.read_file("/mnt/dir/../file.txt")
             assert content == "content"
+
+
+class TestUtimes:
+    """Test utimes() timestamp operations (issue #6)."""
+
+    @pytest.mark.asyncio
+    async def test_utimes_memory_file(self):
+        """utimes on memory file should update mtime."""
+        from just_bash.fs import OverlayFs, OverlayFsOptions
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fs = OverlayFs(OverlayFsOptions(root=tmpdir, mount_point="/mnt"))
+
+            await fs.write_file("/mnt/file.txt", "content")
+            await fs.utimes("/mnt/file.txt", 1000000000.0, 1000000000.0)
+
+            stat = await fs.stat("/mnt/file.txt")
+            assert stat.mtime == 1000000000.0
+
+    @pytest.mark.asyncio
+    async def test_utimes_real_file_copies_to_memory(self):
+        """utimes on real file should copy to memory with new mtime, leaving the real file unchanged."""
+        from just_bash.fs import OverlayFs, OverlayFsOptions
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_file = Path(tmpdir) / "file.txt"
+            real_file.write_text("content")
+            original_mtime = real_file.stat().st_mtime
+
+            fs = OverlayFs(OverlayFsOptions(root=tmpdir, mount_point="/mnt"))
+
+            await fs.utimes("/mnt/file.txt", 1000000000.0, 1000000000.0)
+
+            stat = await fs.stat("/mnt/file.txt")
+            assert stat.mtime == 1000000000.0
+
+            # Real file should be unchanged
+            assert real_file.stat().st_mtime == original_mtime
+
+    @pytest.mark.asyncio
+    async def test_utimes_nonexistent_file(self):
+        """utimes() on a missing file should raise FileNotFoundError."""
+        from just_bash.fs import OverlayFs, OverlayFsOptions
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fs = OverlayFs(OverlayFsOptions(root=tmpdir, mount_point="/mnt"))
+
+            with pytest.raises(FileNotFoundError):
+                await fs.utimes("/mnt/nonexistent.txt", 1000000000.0, 1000000000.0)
