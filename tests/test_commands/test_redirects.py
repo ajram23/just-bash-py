@@ -374,3 +374,49 @@ echo $?
 ''')
         # Same content, diff returns 0
         assert "0" in result.stdout
+
+
+class TestFDValidation:
+    """Test that redirecting to non-open FDs produces errors."""
+
+    @pytest.mark.asyncio
+    async def test_redirect_to_non_open_fd(self):
+        """echo hi 1>&7 where FD 7 isn't open should fail."""
+        bash = Bash()
+        result = await bash.exec('echo hi 1>&7')
+        assert result.exit_code == 1
+        assert "Bad file descriptor" in result.stderr
+
+    @pytest.mark.asyncio
+    async def test_redirect_to_high_fd(self):
+        """echo foo >&100 should fail."""
+        bash = Bash()
+        result = await bash.exec('echo foo >&100')
+        assert result.exit_code == 1
+        assert "Bad file descriptor" in result.stderr
+
+    @pytest.mark.asyncio
+    async def test_redirect_to_open_fd_works(self):
+        """Redirect to an open FD should work."""
+        bash = Bash()
+        result = await bash.exec('echo hello >&1')
+        assert result.exit_code == 0
+        assert result.stdout == "hello\n"
+
+
+class TestMoveFD:
+    """Test >&N- move file descriptor syntax."""
+
+    @pytest.mark.asyncio
+    async def test_move_fd(self):
+        """exec 6>&5- should dup FD 5 onto 6 then close 5."""
+        bash = Bash()
+        result = await bash.exec('''
+echo hello > /tmp/move_test.txt
+exec 5< /tmp/move_test.txt
+exec 6<&5-
+read line <&6
+echo "$line"
+''')
+        assert result.exit_code == 0
+        assert result.stdout.strip() == "hello"

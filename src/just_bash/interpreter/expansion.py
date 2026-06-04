@@ -1312,6 +1312,9 @@ def expand_parameter(ctx: "InterpreterContext", part: ParameterExpansionPart, in
         # Bare array name - check if any elements exist
         elements = get_array_elements(ctx, parameter)
         is_unset = len(elements) == 0
+    elif parameter in ("@", "*"):
+        # $@ and $* are "set" if any positional parameters exist
+        is_unset = "1" not in ctx.state.env
     else:
         is_unset = parameter not in ctx.state.env
     is_empty = value == ""
@@ -1878,6 +1881,9 @@ async def expand_parameter_segments_async(
     elif re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', parameter) and f"{parameter}__is_array" in ctx.state.env:
         elements = get_array_elements(ctx, parameter)
         is_unset = len(elements) == 0
+    elif parameter in ("@", "*"):
+        # $@ and $* are "set" if any positional parameters exist
+        is_unset = "1" not in ctx.state.env
     else:
         is_unset = parameter not in ctx.state.env
     is_empty = value == ""
@@ -2632,12 +2638,15 @@ async def expand_word_with_glob(
     ctx: "InterpreterContext",
     word: WordNode,
     no_split: bool = False,
+    no_glob: bool = False,
 ) -> dict:
     """Expand a word with glob expansion support.
 
     Returns dict with 'values' (list of strings) and 'quoted' (bool).
     If no_split is True, skip IFS word splitting (used for declaration
     builtin assignment values like 'export x=$var').
+    If no_glob is True, skip glob expansion (used for declaration
+    builtin assignment values like 'declare x=*').
     """
     # Check if word contains any quoted parts
     has_quoted = any(
@@ -2832,7 +2841,7 @@ async def expand_word_with_glob(
     # For words with unquoted parts, perform glob expansion and IFS word splitting
     if not all_quoted:
         # Check for glob patterns in unquoted segments (unless noglob is set)
-        noglob = getattr(ctx.state.options, 'noglob', False)
+        noglob = getattr(ctx.state.options, 'noglob', False) or no_glob
         if not noglob and _segments_has_unquoted_glob(segments):
             # Build glob pattern from segments, escaping quoted parts
             glob_pattern = _segments_to_glob_pattern(segments)
@@ -2860,7 +2869,7 @@ async def expand_word_with_glob(
                 # Split on IFS characters using segment-aware splitting
                 words = _split_segments_on_ifs(segments, ifs)
                 # After word splitting, glob-expand each word
-                noglob = getattr(ctx.state.options, 'noglob', False)
+                noglob = getattr(ctx.state.options, 'noglob', False) or no_glob
                 if not noglob:
                     expanded_words = []
                     for w in words:

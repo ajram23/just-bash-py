@@ -1815,7 +1815,7 @@ class Parser:
             # For parameter expansion default values, parse allowing inner quotes
             # to be recognized, but suppress glob expansion.
             # When inside double quotes (quoted=True), single quotes are literal.
-            parts = self._parse_word_parts(value, quoted=False, single_quoted=single_quoted, in_assignment=in_assignment, in_heredoc=in_heredoc, suppress_glob=quoted, literal_single_quotes=quoted)
+            parts = self._parse_word_parts(value, quoted=False, single_quoted=single_quoted, in_assignment=in_assignment, in_heredoc=in_heredoc, suppress_glob=quoted, literal_single_quotes=quoted, dquote_escape=quoted)
         else:
             # For regular tokens, parse with the quoted context
             parts = self._parse_word_parts(value, quoted=quoted, single_quoted=single_quoted, in_assignment=in_assignment, in_heredoc=in_heredoc)
@@ -1833,12 +1833,14 @@ class Parser:
 
         return AST.word(parts)
 
-    def _parse_word_parts(self, value: str, quoted: bool = False, single_quoted: bool = False, in_assignment: bool = False, in_heredoc: bool = False, suppress_glob: bool = False, literal_single_quotes: bool = False) -> list[WordPart]:
+    def _parse_word_parts(self, value: str, quoted: bool = False, single_quoted: bool = False, in_assignment: bool = False, in_heredoc: bool = False, suppress_glob: bool = False, literal_single_quotes: bool = False, dquote_escape: bool = False) -> list[WordPart]:
         """Parse word parts from a string value.
 
         Parameters:
         - literal_single_quotes: If True, treat single quotes as literal characters
           (not quote markers). Used when parsing inside double-quoted parameter expansion.
+        - dquote_escape: If True, use double-quote backslash rules even when quoted=False.
+          Backslash before non-special chars ($, `, \\, ", newline) preserves the backslash.
         """
         # Single-quoted strings are completely literal - no expansions
         if single_quoted:
@@ -2112,6 +2114,12 @@ class Parser:
             if c == "\\" and i + 1 < len(value):
                 next_c = value[i + 1]
                 if not quoted:
+                    if dquote_escape and next_c not in '"\\$`\n':
+                        # Inside double-quoted param expansion: backslash before
+                        # non-special chars is literal (e.g. \z -> \z)
+                        literal_buffer += c + next_c
+                        i += 2
+                        continue
                     # Outside quotes, backslash escapes any character
                     flush_literal()
                     parts.append(EscapedPart(value=next_c))

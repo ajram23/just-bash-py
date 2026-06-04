@@ -1035,9 +1035,36 @@ class Interpreter:
                     target_str = await expand_word_async(self._ctx, redir.target)
                     if target_str == "-":
                         self._state.fd_table.close(fd)
+                    elif target_str.endswith("-") and target_str[:-1].isdigit():
+                        # Move FD: dup target then close target (e.g. <&5-)
+                        move_fd = int(target_str[:-1])
+                        if self._state.fd_table.is_open(move_fd):
+                            if fd == 0:
+                                fd_path = self._state.fd_table.get_path(move_fd)
+                                if fd_path:
+                                    try:
+                                        stdin = await self._fs.read_file(fd_path)
+                                    except FileNotFoundError:
+                                        pass
+                                else:
+                                    stdin = self._state.fd_table.read(move_fd)
+                            else:
+                                self._state.fd_table.dup(move_fd, fd)
+                            self._state.fd_table.close(move_fd)
                     elif target_str.isdigit():
                         target_fd = int(target_str)
-                        self._state.fd_table.dup(target_fd, fd)
+                        if self._state.fd_table.is_open(target_fd):
+                            if fd == 0:
+                                fd_path = self._state.fd_table.get_path(target_fd)
+                                if fd_path:
+                                    try:
+                                        stdin = await self._fs.read_file(fd_path)
+                                    except FileNotFoundError:
+                                        pass
+                                else:
+                                    stdin = self._state.fd_table.read(target_fd)
+                            else:
+                                self._state.fd_table.dup(target_fd, fd)
 
         try:
             # Expand command name
@@ -1214,13 +1241,56 @@ class Interpreter:
                 if redir.target is not None and isinstance(redir.target, WordNode):
                     target_path = await expand_word_async(self._ctx, redir.target)
                     target_path = self._fs.resolve_path(self._state.cwd, target_path)
+                    fd = redir.fd if redir.fd is not None else 0
                     try:
-                        file_content = await self._fs.read_file(target_path)
-                        stdin = file_content
+                        if fd >= 3:
+                            # Custom FD: open for reading in FD table
+                            self._state.fd_table.open(fd, target_path, "r")
+                        else:
+                            file_content = await self._fs.read_file(target_path)
+                            stdin = file_content
                     except FileNotFoundError:
                         pass
                     except Exception:
                         pass
+            elif redir.operator == "<&":
+                if redir.target is not None and isinstance(redir.target, WordNode):
+                    target_path = await expand_word_async(self._ctx, redir.target)
+                    fd = redir.fd if redir.fd is not None else 0
+                    if target_path == "-":
+                        self._state.fd_table.close(fd)
+                    elif target_path.endswith("-") and target_path[:-1].isdigit():
+                        # Move FD: dup target then close target
+                        move_fd = int(target_path[:-1])
+                        if self._state.fd_table.is_open(move_fd):
+                            if fd == 0:
+                                # Read content from source FD as stdin
+                                fd_path = self._state.fd_table.get_path(move_fd)
+                                if fd_path:
+                                    try:
+                                        stdin = await self._fs.read_file(fd_path)
+                                    except FileNotFoundError:
+                                        pass
+                                else:
+                                    stdin = self._state.fd_table.read(move_fd)
+                            else:
+                                self._state.fd_table.dup(move_fd, fd)
+                            self._state.fd_table.close(move_fd)
+                    elif target_path.isdigit():
+                        src_fd = int(target_path)
+                        if self._state.fd_table.is_open(src_fd):
+                            if fd == 0:
+                                # Read content from source FD as stdin
+                                fd_path = self._state.fd_table.get_path(src_fd)
+                                if fd_path:
+                                    try:
+                                        stdin = await self._fs.read_file(fd_path)
+                                    except FileNotFoundError:
+                                        pass
+                                else:
+                                    stdin = self._state.fd_table.read(src_fd)
+                            else:
+                                self._state.fd_table.dup(src_fd, fd)
         return stdin
 
     async def _process_output_redirections(
@@ -1272,7 +1342,10 @@ class Interpreter:
 
                 # Check for FD duplication operators - don't resolve as path
                 is_fd_dup = redir.operator in (">&", "<&")
-                is_fd_target = is_fd_dup and (target_path.isdigit() or target_path == "-")
+                is_fd_target = is_fd_dup and (
+                    target_path.isdigit() or target_path == "-"
+                    or (target_path.endswith("-") and target_path[:-1].isdigit())
+                )
 
                 # Handle /dev/null and special device files
                 if target_path in ("/dev/null", "/dev/zero"):
@@ -1381,6 +1454,16 @@ class Interpreter:
                     if target_path == "-":
                         # Close FD
                         self._state.fd_table.close(fd)
+                    elif target_path.endswith("-") and target_path[:-1].isdigit():
+                        # Move FD: dup target then close target (e.g. >&5-)
+                        move_fd = int(target_path[:-1])
+                        if not self._state.fd_table.is_open(move_fd):
+                            return ExecResult(
+                                stdout="", stderr=f"bash: {move_fd}: Bad file descriptor\n",
+                                exit_code=1,
+                            )
+                        self._state.fd_table.dup(move_fd, fd)
+                        self._state.fd_table.close(move_fd)
                     elif target_path == "2":
                         # fd>&2: redirect fd to stderr
                         if fd == 1:
@@ -1398,6 +1481,11 @@ class Interpreter:
                             self._state.fd_table.dup(1, fd)
                     elif target_path.isdigit():
                         target_fd = int(target_path)
+                        if not self._state.fd_table.is_open(target_fd):
+                            return ExecResult(
+                                stdout="", stderr=f"bash: {target_fd}: Bad file descriptor\n",
+                                exit_code=1,
+                            )
                         if target_fd >= 3:
                             # Redirect fd to a custom FD
                             fd_entry = self._state.fd_table._fds.get(target_fd)
@@ -1457,6 +1545,16 @@ class Interpreter:
                     # Input FD duplication - in output context, works same as >&
                     if target_path == "-":
                         self._state.fd_table.close(fd)
+                    elif target_path.endswith("-") and target_path[:-1].isdigit():
+                        # Move FD: dup target then close target (e.g. <&5-)
+                        move_fd = int(target_path[:-1])
+                        if not self._state.fd_table.is_open(move_fd):
+                            return ExecResult(
+                                stdout="", stderr=f"bash: {move_fd}: Bad file descriptor\n",
+                                exit_code=1,
+                            )
+                        self._state.fd_table.dup(move_fd, fd)
+                        self._state.fd_table.close(move_fd)
                     elif target_path == "2":
                         if fd == 1:
                             stderr = stderr + stdout
@@ -1731,7 +1829,7 @@ class Interpreter:
         for arg in node.args:
             # Declaration builtins suppress word splitting on assignment args
             is_assignment_arg = is_declaration and _word_has_literal_equals(arg)
-            expanded = await expand_word_with_glob(self._ctx, arg, no_split=is_assignment_arg)
+            expanded = await expand_word_with_glob(self._ctx, arg, no_split=is_assignment_arg, no_glob=is_assignment_arg)
             values = expanded["values"]
             if is_assignment_arg:
                 from .expansion import expand_tilde_in_assignment_value
