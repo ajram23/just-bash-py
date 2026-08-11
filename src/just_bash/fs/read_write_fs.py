@@ -367,6 +367,17 @@ class ReadWriteFs:
 
         real_path.chmod(mode)
 
+    async def utimes(self, path: str, atime: float, mtime: float) -> None:
+        """Set access and modification times for a file."""
+        real_path = self._to_real_path(path)
+
+        if not real_path.exists():
+            raise FileNotFoundError(
+                f"ENOENT: no such file or directory, utimes '{path}'"
+            )
+
+        os.utime(real_path, (atime, mtime))
+
     async def symlink(self, target: str, link_path: str) -> None:
         """Create a symbolic link."""
         link_real = self._to_real_path(link_path)

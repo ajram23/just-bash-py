@@ -791,6 +791,48 @@ class OverlayFs:
             elif await self.is_directory(normalized):
                 self._memory[normalized] = DirectoryEntry(mode=mode)
 
+    async def utimes(self, path: str, atime: float, mtime: float) -> None:
+        """Set access and modification times (in memory)."""
+        self._assert_writable("utimes")
+
+        normalized = self._normalize_path(path)
+
+        if not await self.exists(normalized):
+            raise FileNotFoundError(
+                f"ENOENT: no such file or directory, utimes '{path}'"
+            )
+
+        # If in memory, update it
+        if normalized in self._memory:
+            entry = self._memory[normalized]
+            if entry.type == "file":
+                self._memory[normalized] = FileEntry(
+                    content=entry.content,
+                    mode=entry.mode,
+                    mtime=mtime,
+                )
+            elif entry.type == "directory":
+                self._memory[normalized] = DirectoryEntry(
+                    mode=entry.mode,
+                    mtime=mtime,
+                )
+            elif entry.type == "symlink":
+                self._memory[normalized] = SymlinkEntry(
+                    target=entry.target,
+                    mode=entry.mode,
+                    mtime=mtime,
+                )
+        else:
+            # Copy from real fs to memory with new mtime
+            stat = await self.stat(normalized)
+            if await self.is_file(normalized):
+                content = await self.read_file_bytes(normalized)
+                self._memory[normalized] = FileEntry(
+                    content=content, mode=stat.mode, mtime=mtime
+                )
+            elif await self.is_directory(normalized):
+                self._memory[normalized] = DirectoryEntry(mode=stat.mode, mtime=mtime)
+
     async def symlink(self, target: str, link_path: str) -> None:
         """Create a symbolic link (in memory)."""
         self._assert_writable("symlink")

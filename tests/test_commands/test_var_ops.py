@@ -267,3 +267,149 @@ class TestTransformOperators:
         bash = Bash()
         result = await bash.exec('x=hello; echo "${x@a}"')
         assert result.stdout == "\n"
+
+
+class TestAtStarVarOps:
+    """Test $@ and $* in parameter expansion operations like ${@-}, ${@+}."""
+
+    @pytest.mark.asyncio
+    async def test_at_minus_with_params(self):
+        """${@-minus} should NOT use default when params are set."""
+        bash = Bash()
+        result = await bash.exec('''
+f() { argv.py ${@-minus}; }
+f "hello"
+''')
+        assert result.stdout.strip() == "['hello']"
+
+    @pytest.mark.asyncio
+    async def test_at_plus_with_params(self):
+        """${@+plus} should use alt when params are set."""
+        bash = Bash()
+        result = await bash.exec('''
+f() { argv.py ${@+plus}; }
+f ""
+''')
+        assert result.stdout.strip() == "['plus']"
+
+    @pytest.mark.asyncio
+    async def test_at_minus_no_params(self):
+        """${@-minus} should use default when no params."""
+        bash = Bash()
+        result = await bash.exec('''
+f() { argv.py ${@-minus}; }
+f
+''')
+        assert result.stdout.strip() == "['minus']"
+
+    @pytest.mark.asyncio
+    async def test_at_plus_no_params(self):
+        """${@+plus} should NOT use alt when no params."""
+        bash = Bash()
+        result = await bash.exec('''
+f() { argv.py ${@+plus}; }
+f
+''')
+        assert result.stdout.strip() == "[]"
+
+    @pytest.mark.asyncio
+    async def test_star_minus_with_params(self):
+        """${*-minus} should NOT use default when params are set."""
+        bash = Bash()
+        result = await bash.exec('''
+f() { argv.py "${*-minus}"; }
+f ""
+''')
+        assert result.stdout.strip() == "['']"
+
+    @pytest.mark.asyncio
+    async def test_star_plus_with_params(self):
+        """${*+plus} should use alt when params are set."""
+        bash = Bash()
+        result = await bash.exec('''
+f() { argv.py "${*+plus}"; }
+f ""
+''')
+        assert result.stdout.strip() == "['plus']"
+
+    @pytest.mark.asyncio
+    async def test_colon_minus_empty_param(self):
+        """${@:-minus} should use default when param is empty."""
+        bash = Bash()
+        result = await bash.exec('''
+f() { argv.py ${@:-minus}; }
+f ""
+''')
+        assert result.stdout.strip() == "['minus']"
+
+    @pytest.mark.asyncio
+    async def test_colon_plus_empty_param(self):
+        """${@:+plus} should NOT use alt when param is empty."""
+        bash = Bash()
+        result = await bash.exec('''
+f() { argv.py ${@:+plus}; }
+f ""
+''')
+        assert result.stdout.strip() == "[]"
+
+
+class TestDeclarationGlobSuppression:
+    """Test that declaration builtins suppress glob expansion on RHS."""
+
+    @pytest.mark.asyncio
+    async def test_declare_no_glob(self):
+        """declare x=* should store literal '*', not expand."""
+        bash = Bash(files={"/tmp/a.txt": "", "/tmp/b.txt": ""})
+        result = await bash.exec('''
+cd /tmp
+declare foo=*
+echo "$foo"
+''')
+        assert result.stdout.strip() == "*"
+
+    @pytest.mark.asyncio
+    async def test_export_no_glob(self):
+        """export x=* should store literal '*'."""
+        bash = Bash(files={"/tmp/a.txt": "", "/tmp/b.txt": ""})
+        result = await bash.exec('''
+cd /tmp
+export foo=*
+echo "$foo"
+''')
+        assert result.stdout.strip() == "*"
+
+    @pytest.mark.asyncio
+    async def test_local_no_glob(self):
+        """local x=* should store literal '*'."""
+        bash = Bash(files={"/tmp/a.txt": "", "/tmp/b.txt": ""})
+        result = await bash.exec('''
+f() {
+    cd /tmp
+    local foo=*
+    echo "$foo"
+}
+f
+''')
+        assert result.stdout.strip() == "*"
+
+    @pytest.mark.asyncio
+    async def test_typeset_no_glob(self):
+        """typeset x=* should store literal '*'."""
+        bash = Bash(files={"/tmp/a.txt": "", "/tmp/b.txt": ""})
+        result = await bash.exec('''
+cd /tmp
+typeset foo=*
+echo "$foo"
+''')
+        assert result.stdout.strip() == "*"
+
+    @pytest.mark.asyncio
+    async def test_readonly_no_glob(self):
+        """readonly x=* should store literal '*'."""
+        bash = Bash(files={"/tmp/a.txt": "", "/tmp/b.txt": ""})
+        result = await bash.exec('''
+cd /tmp
+readonly foo=*
+echo "$foo"
+''')
+        assert result.stdout.strip() == "*"

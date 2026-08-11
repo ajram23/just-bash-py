@@ -19,6 +19,7 @@ This is a Python port of [just-bash](https://github.com/vercel-labs/just-bash), 
 - **36 shell builtins** - cd, export, declare, test, pushd, popd, and more
 - **Async execution** - Built on asyncio for non-blocking operation
 - **Security limits** - Prevent infinite loops, excessive recursion, runaway execution
+- **Opt-in networking** - Allow-listed `curl` with URL prefixes, method restrictions, and SSRF protection
 
 ## Installation
 
@@ -291,6 +292,18 @@ result = await bash.exec("curl -s https://api.example.com/v1/status")
 `curl` is registered only when `network` or a custom `fetch` function is provided.
 Without network configuration, `curl` returns "command not found".
 
+`NetworkConfig` options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `allowed_url_prefixes` | `[]` | URL prefixes requests must match (strings or `AllowedUrl` objects) |
+| `allowed_methods` | `["GET", "HEAD"]` | Permitted HTTP methods |
+| `max_redirects` | `20` | Maximum redirects to follow (each target is re-checked against the allow-list) |
+| `timeout_ms` | `30000` | Request timeout in milliseconds |
+| `max_response_size` | `10485760` | Maximum response body size in bytes (10 MB) |
+| `deny_private_ranges` | `False` | Block requests to private/loopback/link-local addresses, checked against the hostname and every resolved IP (SSRF protection) |
+| `dangerously_allow_full_internet_access` | `False` | Skip the allow-list entirely |
+
 Allow additional HTTP methods when needed:
 
 ```python
@@ -343,6 +356,7 @@ The allow-list enforces:
 - **HTTP method restrictions** - Only GET and HEAD are allowed by default
 - **Redirect protection** - Redirect targets are checked before following them
 - **Header transforms** - Boundary-injected headers override sandbox-supplied headers with the same name
+- **Private-range blocking** - With `deny_private_ranges=True`, requests to private, loopback, and link-local addresses are rejected, including IPv4-mapped IPv6 forms, guarding against DNS-rebinding SSRF
 
 #### Using curl
 
@@ -499,6 +513,11 @@ e736ca4  2026-02-17     2831       0        2  ███████████
 7c83ff3  2026-02-18     2870       0        3  █████████████████████████████████████████████████░
 bbb2f27  2026-05-19     2884       0        3  █████████████████████████████████████████████████░
 ad7fcdb  2026-05-19     2903       0        3  █████████████████████████████████████████████████░
+f9b7079  2026-06-03     2905       0        3  █████████████████████████████████████████████████░
+7945fdf  2026-06-03     2922       0        3  █████████████████████████████████████████████████░
+0c8cd47  2026-06-04     2931       0        3  █████████████████████████████████████████████████░
+3e53ed8  2026-06-04     2931       0        3  █████████████████████████████████████████████████░
+664574b  2026-06-04     2931       0        3  █████████████████████████████████████████████████░
 ```
 
 `█` passed · `▒` failed · `░` skipped

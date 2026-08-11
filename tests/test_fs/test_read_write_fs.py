@@ -467,3 +467,70 @@ class TestChmod:
             # Check permission was changed
             mode = test_file.stat().st_mode & 0o777
             assert mode == 0o755
+
+
+class TestUtimes:
+    """Test utimes() timestamp operations (issue #6)."""
+
+    @pytest.mark.asyncio
+    async def test_utimes_sets_times(self):
+        """utimes() should set access and modification times."""
+        from just_bash.fs import ReadWriteFs, ReadWriteFsOptions
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "test.txt"
+            test_file.write_text("content")
+
+            fs = ReadWriteFs(ReadWriteFsOptions(root=tmpdir))
+            await fs.utimes("/test.txt", 1000000000.0, 1000000000.0)
+
+            stat = test_file.stat()
+            assert stat.st_mtime == 1000000000.0
+            assert stat.st_atime == 1000000000.0
+
+    @pytest.mark.asyncio
+    async def test_utimes_nonexistent_file(self):
+        """utimes() on a missing file should raise FileNotFoundError."""
+        from just_bash.fs import ReadWriteFs, ReadWriteFsOptions
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fs = ReadWriteFs(ReadWriteFsOptions(root=tmpdir))
+            with pytest.raises(FileNotFoundError):
+                await fs.utimes("/nonexistent.txt", 1000000000.0, 1000000000.0)
+
+    @pytest.mark.asyncio
+    async def test_touch_creates_file(self):
+        """touch on ReadWriteFs should create the file without errors (issue #6)."""
+        from just_bash import Bash
+        from just_bash.fs import ReadWriteFs, ReadWriteFsOptions
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fs = ReadWriteFs(ReadWriteFsOptions(root=tmpdir))
+            bash = Bash(fs=fs, cwd="/")
+
+            result = await bash.exec("touch text.py")
+
+            assert result.exit_code == 0
+            assert result.stderr == ""
+            assert (Path(tmpdir) / "text.py").exists()
+
+    @pytest.mark.asyncio
+    async def test_touch_existing_file_updates_mtime(self):
+        """touch on an existing file should update its mtime."""
+        from just_bash import Bash
+        from just_bash.fs import ReadWriteFs, ReadWriteFsOptions
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "old.txt"
+            test_file.write_text("content")
+            os.utime(test_file, (1000000000.0, 1000000000.0))
+
+            fs = ReadWriteFs(ReadWriteFsOptions(root=tmpdir))
+            bash = Bash(fs=fs, cwd="/")
+
+            result = await bash.exec("touch old.txt")
+
+            assert result.exit_code == 0
+            assert result.stderr == ""
+            assert test_file.stat().st_mtime > 1000000000.0
+            assert test_file.read_text() == "content"
